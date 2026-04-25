@@ -4,10 +4,17 @@
  * Walks every `generation.finished` event, pulls its `ratings` dict
  * (post-tournament Elo for each engine in the cohort), and renders one
  * Recharts line per engine. An engine that only played one generation
- * shows a single dot; one that's stuck around (baseline-v0, repeat
- * incumbents) gets a multi-point line. Names that are unique to a
- * single gen don't pollute the legend with permanently-flat lines —
- * we only colour them on the gens where they actually played.
+ * shows a single dot at that gen; one that's stuck around (baseline-v0,
+ * repeat incumbents) gets a multi-point line. We do NOT forward-fill
+ * Elo across generations the engine sat out — a flat horizontal line
+ * implies the engine kept playing at that rating, which is misleading.
+ * `connectNulls={true}` joins the dots an engine actually played in.
+ *
+ * Top-N filter: ranked by the engine's *peak* Elo across all its
+ * appearances, not its current Elo. An engine that crushed gen 1 and
+ * never came back deserves to stay on the chart; one whose final Elo
+ * happens to be 1500 because it only played one losing game does not
+ * outrank it.
  *
  * The single-line champion-Elo view in {@link EloChart} is the
  * "headline" — this chart is the "every contender at once" detail view
@@ -26,10 +33,10 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import type { CubistEvent, GenerationFinished } from "../api/events";
+import type { DarwinEvent, GenerationFinished } from "../api/events";
 
 interface EnginesEloChartProps {
-  events: CubistEvent[];
+  events: DarwinEvent[];
 }
 
 /** One row of the data array, with a `gen` index plus an Elo per engine. */
@@ -50,46 +57,70 @@ const COLORS = [
   "#8b5cf6", // violet
 ];
 
+/** Top-N engines (by peak Elo) shown on the chart. Chart with 30 lines is unreadable. */
+const TOP_N = 8;
+
 export default function EnginesEloChart({ events }: EnginesEloChartProps) {
   const finished = events.filter(
     (e): e is GenerationFinished => e.type === "generation.finished",
   );
 
-  // Discover every engine that ever has a rating. Stable sort with
-  // baseline-v0 first so its color slot is always blue.
-  const allEngines = new Set<string>();
+  // Per-engine series of (gen, elo) points — one entry per gen the
+  // engine actually played in. We do NOT forward-fill into gens it
+  // sat out. Recharts' `connectNulls` joins the points without
+  // implying the engine held that rating in between.
+  const series: Record<string, Array<{ gen: number; elo: number }>> = {};
+  // baseline-v0 anchors at gen 0 = 1500 (the seed value written by
+  // scripts/seed_baseline.py). Every other engine starts the moment
+  // it first appears in a `ratings` payload.
+  series["baseline-v0"] = [{ gen: 0, elo: 1500 }];
+
   for (const ev of finished) {
     if (!ev.ratings) continue;
-    for (const name of Object.keys(ev.ratings)) {
-      allEngines.add(name);
+    for (const [name, elo] of Object.entries(ev.ratings)) {
+      if (!series[name]) series[name] = [];
+      series[name].push({ gen: ev.number, elo });
     }
   }
-  const engines = Array.from(allEngines).sort((a, b) => {
-    if (a === "baseline-v0") return -1;
-    if (b === "baseline-v0") return 1;
-    return a.localeCompare(b);
+
+  // Top-N by peak Elo — engines that performed well at any point stay
+  // on the chart even if they stopped being carried forward.
+  const peakElo: Array<[string, number]> = Object.entries(series).map(
+    ([name, points]) => [name, Math.max(...points.map((p) => p.elo))],
+  );
+  peakElo.sort((a, b) => b[1] - a[1]);
+  const topEngines = new Set(peakElo.slice(0, TOP_N).map(([name]) => name));
+
+  // Build the per-gen rows that Recharts wants. We include every gen
+  // where ANY top-N engine has a data point. Engines without a point
+  // in that gen leave the field undefined → `connectNulls` skips it.
+  const allGens = new Set<number>();
+  for (const name of topEngines) {
+    for (const p of series[name]) allGens.add(p.gen);
+  }
+  const sortedGens = Array.from(allGens).sort((a, b) => a - b);
+
+  const data: Row[] = sortedGens.map((gen) => {
+    const row: Row = { gen };
+    for (const name of topEngines) {
+      const point = series[name].find((p) => p.gen === gen);
+      if (point) row[name] = point.elo;
+    }
+    return row;
   });
 
-  // Seed gen 0 with baseline at 1500 (matching seed_baseline.py + the
-  // single-line EloChart's origin point) so the chart has an anchor.
-  const data: Row[] = [];
-  if (engines.length > 0) {
-    const seed: Row = { gen: 0 };
-    if (allEngines.has("baseline-v0")) seed["baseline-v0"] = 1500;
-    data.push(seed);
-  }
+  // Order legend / Line components: baseline-v0 first (reserves the
+  // blue slot), then by peak Elo descending so the leaderboard reads
+  // top-to-bottom.
+  const peakLookup = new Map(peakElo);
+  const engines = Array.from(topEngines).sort((a, b) => {
+    if (a === "baseline-v0") return -1;
+    if (b === "baseline-v0") return 1;
+    return (peakLookup.get(b) ?? 0) - (peakLookup.get(a) ?? 0);
+  });
 
-  for (const ev of finished) {
-    const row: Row = { gen: ev.number };
-    if (ev.ratings) {
-      for (const [name, elo] of Object.entries(ev.ratings)) {
-        row[name] = elo;
-      }
-    }
-    data.push(row);
-  }
-
-  // Y-axis: ±30 points around the min/max actually present.
+  // Y-axis: ±30 points around the min/max actually present in the
+  // (filtered, non-forward-filled) data.
   const eloValues: number[] = [];
   for (const row of data) {
     for (const [k, v] of Object.entries(row)) {
@@ -129,6 +160,9 @@ export default function EnginesEloChart({ events }: EnginesEloChartProps) {
             <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
             <XAxis
               dataKey="gen"
+              type="number"
+              domain={["dataMin", "dataMax"]}
+              allowDecimals={false}
               tick={{ fill: "#9ca3af", fontSize: 11 }}
               label={{
                 value: "Generation",
@@ -159,14 +193,15 @@ export default function EnginesEloChart({ events }: EnginesEloChartProps) {
             {engines.map((name, i) => (
               <Line
                 key={name}
-                type="monotone"
+                type="linear"
                 dataKey={name}
                 name={name}
                 stroke={COLORS[i % COLORS.length]}
                 strokeWidth={name === "baseline-v0" ? 2.5 : 1.5}
-                // connectNulls=false so an engine that only plays one
-                // gen doesn't draw a flat line across the whole chart.
-                connectNulls={false}
+                // Engines only have a point at gens they actually
+                // played — `connectNulls` joins those points without
+                // implying they held that rating in between.
+                connectNulls={true}
                 dot={{ r: 3 }}
                 activeDot={{ r: 5 }}
                 isAnimationActive={true}
