@@ -57,10 +57,10 @@ async def test_run_generation_task_resumes_from_last_champion(mem_db, monkeypatc
 
     called: dict = {}
 
-    async def fake_run_generation(champion, generation_number):
-        called["champion"] = champion
+    async def fake_run_generation(incumbents, generation_number):
+        called["incumbents"] = incumbents
         called["generation_number"] = generation_number
-        return champion
+        return incumbents
 
     monkeypatch.setattr(
         "cubist.orchestration.generation.run_generation",
@@ -71,7 +71,7 @@ async def test_run_generation_task_resumes_from_last_champion(mem_db, monkeypatc
 
     await run_generation_task()
 
-    assert called["champion"].name == gen1_winner
+    assert called["incumbents"][0].name == gen1_winner
     assert called["generation_number"] == 2
 
 
@@ -80,10 +80,10 @@ async def test_run_generation_task_first_run_uses_baseline(mem_db, monkeypatch):
     """With an empty DB, the first generation must start from baseline-v0."""
     called: dict = {}
 
-    async def fake_run_generation(champion, generation_number):
-        called["champion"] = champion
+    async def fake_run_generation(incumbents, generation_number):
+        called["incumbents"] = incumbents
         called["generation_number"] = generation_number
-        return champion
+        return incumbents
 
     monkeypatch.setattr(
         "cubist.orchestration.generation.run_generation",
@@ -94,5 +94,5 @@ async def test_run_generation_task_first_run_uses_baseline(mem_db, monkeypatch):
 
     await run_generation_task()
 
-    assert called["champion"].name == "baseline-v0"
+    assert called["incumbents"][0].name == "baseline-v0"
     assert called["generation_number"] == 1

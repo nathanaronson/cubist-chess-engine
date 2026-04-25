@@ -37,6 +37,7 @@ mode can be reverse-engineered later.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import logging
@@ -184,6 +185,94 @@ def _check_hallucinated_chess_attrs(source: str) -> str | None:
     return None
 
 
+# Names of LLM-call helpers from cubist.llm. Catching either spelling
+# (await complete_text(...) or await complete(...)) lets us detect any
+# engine that consults the model from inside select_move.
+_LLM_CALL_NAMES = frozenset({"complete", "complete_text"})
+
+
+def _check_llm_call_in_loop(source: str) -> str | None:
+    """Reject engines that call the LLM inside a `for` loop in select_move.
+
+    The pattern we're catching is "evaluate every legal move with the LLM",
+    e.g. ::
+
+        async def select_move(self, board, time_remaining_ms):
+            for move in board.legal_moves:           # ← O(legal_moves)
+                board.push(move)
+                score = await complete_text(...)     # ← LLM call per move
+                board.pop()
+
+    With ~20–30 legal moves per turn at ~0.5s per Gemini call, this
+    pattern produces 10–15 seconds *per move* and 20+ minutes per smoke
+    game. The 60s smoke wall-clock cap will eventually reject it, but
+    only after burning a minute of validator time and a couple hundred
+    LLM calls. Detecting it statically rejects in <100ms with no API
+    spend.
+
+    We deliberately allow LLM calls *outside* loops in select_move
+    (the typical "ask the LLM for the best move once" pattern) and
+    LLM calls *inside* loops in helper methods that are not select_move.
+    The smoke validator is the second line of defense for those.
+
+    Returns ``None`` if clean, or a human-readable reason on rejection.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        return f"syntax error: {e.msg} at line {e.lineno}"
+
+    # ast.walk doesn't track parent links, so attach them manually.
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            child._parent = parent  # type: ignore[attr-defined]
+
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Await):
+            continue
+        if not isinstance(node.value, ast.Call):
+            continue
+        func = node.value.func
+        if isinstance(func, ast.Name):
+            called = func.id
+        elif isinstance(func, ast.Attribute):
+            called = func.attr
+        else:
+            continue
+        if called not in _LLM_CALL_NAMES:
+            continue
+
+        # Walk up the parent chain. The Await counts as a violation only
+        # if there is a `for` loop ancestor that itself sits inside an
+        # `async def select_move`. Helper methods are out of scope.
+        cur = node
+        in_for = False
+        in_select_move = False
+        while True:
+            cur = getattr(cur, "_parent", None)
+            if cur is None:
+                break
+            if isinstance(cur, ast.For):
+                in_for = True
+            if isinstance(cur, ast.AsyncFunctionDef) and cur.name == "select_move":
+                in_select_move = True
+                break
+        if in_for and in_select_move:
+            violations.append(called)
+
+    if violations:
+        return (
+            f"select_move calls the LLM ({sorted(set(violations))}) inside a "
+            "`for` loop. That's an O(legal_moves) ~20–30 LLM calls per turn, "
+            "which makes the engine pathologically slow and forfeits every "
+            "tournament game on time. Restructure to call the LLM at most "
+            "once per turn (e.g. ask for the best move directly, not for an "
+            "evaluation of each candidate)."
+        )
+    return None
+
+
 def _static_check_source(source: str) -> str | None:
     """Run all static gates against ``source``. Return reason on failure."""
     if FORBIDDEN.search(source):
@@ -194,6 +283,9 @@ def _static_check_source(source: str) -> str | None:
     bogus = _check_hallucinated_chess_attrs(source)
     if bogus is not None:
         return f"chess_attrs: {bogus}"
+    slow = _check_llm_call_in_loop(source)
+    if slow is not None:
+        return f"slow_pattern: {slow}"
     return None
 
 

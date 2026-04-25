@@ -19,7 +19,7 @@ from cubist.engines.registry import load_engine
 from cubist.storage.db import get_session
 from cubist.storage.models import EngineRow, GameRow, GenerationRow
 from cubist.tournament.runner import round_robin
-from cubist.tournament.selection import select_champion
+from cubist.tournament.selection import select_top_n
 
 log = logging.getLogger("cubist.orchestration")
 
@@ -28,16 +28,32 @@ def _read_source(engine: Engine) -> str:
     return inspect.getsource(type(engine))
 
 
-async def run_generation(champion: Engine, generation_number: int) -> Engine:
+async def run_generation(
+    incumbents: list[Engine], generation_number: int
+) -> list[Engine]:
+    """Run one generation: strategist → builders → tournament → selection.
+
+    ``incumbents[0]`` is the *primary* champion — its source is shown to
+    the strategist and used as the seed for builders, and it's the
+    ``champion_before`` field that gets persisted. Any extra incumbents
+    (``incumbents[1:]``) are runners-up from the previous generation and
+    they participate in the round-robin alongside the new candidates,
+    but they are not seeds for new builds. Returns the list of top-2
+    engines coming out of this generation, for the orchestrator to seed
+    the next run.
+    """
+    if not incumbents:
+        raise ValueError("run_generation requires at least one incumbent")
+    primary = incumbents[0]
     await bus.emit(
         {
             "type": "generation.started",
             "number": generation_number,
-            "champion": champion.name,
+            "champion": primary.name,
         }
     )
 
-    questions = await propose_questions(_read_source(champion), [])
+    questions = await propose_questions(_read_source(primary), [])
     for q in questions:
         await bus.emit(
             {
@@ -50,7 +66,7 @@ async def run_generation(champion: Engine, generation_number: int) -> Engine:
 
     paths = await asyncio.gather(
         *[
-            build_engine(_read_source(champion), champion.name, generation_number, q)
+            build_engine(_read_source(primary), primary.name, generation_number, q)
             for q in questions
         ],
         return_exceptions=True,
@@ -108,18 +124,34 @@ async def run_generation(champion: Engine, generation_number: int) -> Engine:
             generation_number,
         )
 
+    # The tournament cohort is every incumbent + every accepted candidate.
+    # With 2 incumbents and up to 4 candidates that's 6 engines and
+    # 6*5*games_per_pairing = 60 games concurrently — the
+    # max_parallel_games semaphore caps actual concurrency to keep
+    # Gemini quotas in line.
+    cohort = [*incumbents, *candidates]
     standings = await round_robin(
-        [champion, *candidates],
+        cohort,
         games_per_pairing=settings.games_per_pairing,
         time_per_move_ms=settings.time_per_move_ms,
         on_event=bus.emit,
     )
-    new_champion, promoted = select_champion(standings, champion, candidates)
+
+    # Score-based selection with random tiebreak. The primary incumbent
+    # is the "anti-regression baseline" — anything else in the cohort is
+    # a candidate from the selector's perspective (so the runner-up
+    # incumbent gets re-evaluated each gen, just like the new builds).
+    others = [e for e in cohort if e.name != primary.name]
+    top = select_top_n(standings, primary, others, n=2)
+    new_champion = top[0]
+    promoted = new_champion.name != primary.name
 
     with get_session() as s:
+        from sqlmodel import select as _select
+
         gen_row = GenerationRow(
             number=generation_number,
-            champion_before=champion.name,
+            champion_before=primary.name,
             champion_after=new_champion.name,
             strategist_questions_json=json.dumps(
                 [{"category": q.category, "text": q.text} for q in questions]
@@ -138,23 +170,28 @@ async def run_generation(champion: Engine, generation_number: int) -> Engine:
                     termination=g.termination,
                 )
             )
-        if promoted:
-            existing = s.get(EngineRow, new_champion.name)
-            if existing is None:
-                from sqlmodel import select
 
-                existing = s.exec(
-                    select(EngineRow).where(EngineRow.name == new_champion.name)
-                ).first()
-            if existing is None:
-                s.add(
-                    EngineRow(
-                        name=new_champion.name,
-                        generation=generation_number,
-                        parent_name=champion.name,
-                        code_path=candidate_paths[new_champion.name],
-                    )
+        # Persist EngineRows for every accepted candidate (not just the
+        # promoted one) so the orchestrator can load the runner-up next
+        # gen by name. Dedupe on name — a second appearance under the
+        # same name is treated as a no-op.
+        for cand in candidates:
+            existing = s.exec(
+                _select(EngineRow).where(EngineRow.name == cand.name)
+            ).first()
+            if existing is not None:
+                continue
+            path = candidate_paths.get(cand.name)
+            if path is None:
+                continue
+            s.add(
+                EngineRow(
+                    name=cand.name,
+                    generation=generation_number,
+                    parent_name=primary.name,
+                    code_path=path,
                 )
+            )
         s.commit()
 
     await bus.emit(
@@ -166,7 +203,7 @@ async def run_generation(champion: Engine, generation_number: int) -> Engine:
             "promoted": promoted,
         }
     )
-    return new_champion
+    return top
 
 
 async def run_generation_task() -> None:
@@ -191,20 +228,83 @@ async def run_generation_task() -> None:
         next_number = (last.number + 1) if last else 1
 
         if last is None:
-            from cubist.engines.baseline import engine as champion
+            from cubist.engines.baseline import engine as baseline
+            incumbents: list[Engine] = [baseline]
         else:
-            row = s.exec(
-                select(EngineRow).where(EngineRow.name == last.champion_after)
-            ).first()
-            if row is None:
-                # baseline won the last generation — no EngineRow was inserted for it
-                from cubist.engines.baseline import engine as champion
-            else:
-                champion = load_engine(row.code_path)
+            # Reconstruct previous-gen scores from GameRow so we can
+            # carry the top-2 forward. Score = wins + 0.5*draws.
+            prev_games = s.exec(
+                select(GameRow).where(GameRow.generation == last.number)
+            ).all()
+            scores: dict[str, float] = {}
+            for g in prev_games:
+                scores.setdefault(g.white_name, 0.0)
+                scores.setdefault(g.black_name, 0.0)
+                if g.result == "1-0":
+                    scores[g.white_name] += 1.0
+                elif g.result == "0-1":
+                    scores[g.black_name] += 1.0
+                else:
+                    scores[g.white_name] += 0.5
+                    scores[g.black_name] += 0.5
 
-    log.info("run_generation_task starting generation=%d", next_number)
+            # The new champion is non-negotiable — it always seeds the
+            # next gen. If there's a runner-up, it joins as a second
+            # incumbent. Order by score desc then by name (deterministic
+            # tiebreak here is fine — the random tiebreak happened in
+            # ``select_top_n`` when promotion was decided).
+            ranked_names = sorted(
+                scores.keys(),
+                key=lambda n: (-scores[n], n),
+            )
+            # Champion always first.
+            top_names: list[str] = [last.champion_after]
+            for n in ranked_names:
+                if n == last.champion_after:
+                    continue
+                top_names.append(n)
+                if len(top_names) >= 2:
+                    break
+
+            incumbents = []
+            for name in top_names:
+                row = s.exec(
+                    select(EngineRow).where(EngineRow.name == name)
+                ).first()
+                if row is None:
+                    if name == "baseline-v0":
+                        from cubist.engines.baseline import engine as baseline
+                        incumbents.append(baseline)
+                    else:
+                        log.warning(
+                            "skipping incumbent %s — no EngineRow found",
+                            name,
+                        )
+                    continue
+                try:
+                    incumbents.append(load_engine(row.code_path))
+                except Exception as e:
+                    log.warning(
+                        "skipping incumbent %s — load_engine failed: %r",
+                        name, e,
+                    )
+
+            # Defensive: if every load failed, fall back to baseline so
+            # the generation can still run rather than silently dying.
+            if not incumbents:
+                log.error(
+                    "could not load any incumbent from gen=%d; falling back "
+                    "to baseline-v0", last.number,
+                )
+                from cubist.engines.baseline import engine as baseline
+                incumbents = [baseline]
+
+    log.info(
+        "run_generation_task starting generation=%d incumbents=%s",
+        next_number, [e.name for e in incumbents],
+    )
     try:
-        await run_generation(champion, next_number)
+        await run_generation(incumbents, next_number)
         log.info("run_generation_task finished generation=%d", next_number)
     except asyncio.CancelledError:
         log.warning("run_generation_task cancelled generation=%d", next_number)
@@ -225,7 +325,7 @@ async def run_generation_task() -> None:
             {
                 "type": "generation.finished",
                 "number": next_number,
-                "new_champion": champion.name,
+                "new_champion": incumbents[0].name,
                 "elo_delta": 0.0,
                 "promoted": False,
             }

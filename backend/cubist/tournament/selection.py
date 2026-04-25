@@ -1,27 +1,35 @@
-"""Anti-regression gate.
+"""Champion selection.
 
-The top scorer in the tournament becomes the new champion ONLY IF it beats
-the prior champion in their head-to-head subset. Otherwise champion persists.
+Each generation's tournament produces a ``Standings`` with per-engine
+score (wins + 0.5*draws). We rank everyone by overall score, break ties
+randomly, and the #1 becomes the new champion. The previous head-to-head
+gate ("candidate must beat incumbent in their direct subset") was
+discarded — with 4 candidates per cohort and only 2 head-to-head games
+per pair, that gate had high enough variance to lock the demo on
+baseline indefinitely. Overall score across the whole round-robin is a
+more stable signal.
+
+``select_top_n`` returns the top N engines (default 2) so the orchestrator
+can carry the runner-up forward as a second incumbent in the next gen —
+giving the strategist+builder more genetic diversity to work with.
 """
+
+import random
 
 from cubist.engines.base import Engine
 from cubist.tournament.runner import Standings
 
 
-def _h2h_score(games, a: str, b: str) -> tuple[float, int]:
-    score = 0.0
-    games_played = 0
-    for game in games:
-        if {game.white, game.black} != {a, b}:
-            continue
-        games_played += 1
-        if game.result == "1-0":
-            score += 1.0 if game.white == a else 0.0
-        elif game.result == "0-1":
-            score += 1.0 if game.black == a else 0.0
-        else:
-            score += 0.5
-    return score, games_played
+def _ranked_engines(
+    standings: Standings, engines: list[Engine]
+) -> list[Engine]:
+    """Sort engines by score descending, with random tiebreak."""
+    # `random.random()` per key call is the standard "shuffle ties" trick.
+    # The negative score makes desc-order via the natural ascending sort.
+    return sorted(
+        engines,
+        key=lambda e: (-standings.scores.get(e.name, 0.0), random.random()),
+    )
 
 
 def select_champion(
@@ -29,14 +37,36 @@ def select_champion(
     incumbent: Engine,
     candidates: list[Engine],
 ) -> tuple[Engine, bool]:
-    """Returns (new_champion, promoted). promoted=False means incumbent persisted."""
+    """Returns ``(new_champion, promoted)``.
+
+    Highest overall score wins; ties are resolved randomly (so a flat
+    "everyone got 50%" round still picks someone). ``promoted`` is True
+    iff the winner is not the incumbent.
+    """
     if not candidates:
         return incumbent, False
+    ranked = _ranked_engines(standings, [incumbent, *candidates])
+    winner = ranked[0]
+    return winner, winner.name != incumbent.name
 
-    top = max(candidates, key=lambda engine: standings.scores.get(engine.name, 0.0))
-    score, games_played = _h2h_score(standings.games, top.name, incumbent.name)
-    if games_played == 0:
-        return incumbent, False
-    if score > games_played / 2:
-        return top, True
-    return incumbent, False
+
+def select_top_n(
+    standings: Standings,
+    incumbent: Engine,
+    candidates: list[Engine],
+    n: int = 2,
+) -> list[Engine]:
+    """Return the top-N engines by score across ``[incumbent, *candidates]``.
+
+    The first element is the new champion; subsequent elements are the
+    runners-up that the orchestrator will carry into the next generation
+    as additional incumbents. ``n`` defaults to 2 because the demo loop
+    benchmarks "top-2 forward" — bumping it higher widens the round-
+    robin quadratically (engines × games_per_pairing) and is rarely
+    worth it.
+    """
+    pool = [incumbent, *candidates]
+    if not pool:
+        return []
+    ranked = _ranked_engines(standings, pool)
+    return ranked[: max(1, n)]
