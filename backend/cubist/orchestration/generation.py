@@ -57,6 +57,7 @@ async def run_generation(champion: Engine, generation_number: int) -> Engine:
     )
 
     candidates: list[Engine] = []
+    candidate_paths: dict[str, str] = {}
     for q, p in zip(questions, paths):
         if isinstance(p, Exception):
             log.error(
@@ -92,7 +93,9 @@ async def run_generation(champion: Engine, generation_number: int) -> Engine:
             }
         )
         if ok:
-            candidates.append(load_engine(str(p)))
+            eng = load_engine(str(p))
+            candidate_paths[eng.name] = str(p.resolve())
+            candidates.append(eng)
 
     # If every candidate fell through, ``round_robin([champion])`` will
     # schedule zero games (i==j filter). Surface this loudly so the
@@ -149,7 +152,7 @@ async def run_generation(champion: Engine, generation_number: int) -> Engine:
                         name=new_champion.name,
                         generation=generation_number,
                         parent_name=champion.name,
-                        code_path=f"cubist.engines.generated.{new_champion.name}",
+                        code_path=candidate_paths[new_champion.name],
                     )
                 )
         s.commit()
@@ -179,8 +182,6 @@ async def run_generation_task() -> None:
     event is emitted before the cancellation propagates, so the frontend
     can clear its in-progress panels.
     """
-    from cubist.engines.baseline import engine as baseline
-
     with get_session() as s:
         from sqlmodel import select
 
@@ -189,9 +190,21 @@ async def run_generation_task() -> None:
         ).first()
         next_number = (last.number + 1) if last else 1
 
+        if last is None:
+            from cubist.engines.baseline import engine as champion
+        else:
+            row = s.exec(
+                select(EngineRow).where(EngineRow.name == last.champion_after)
+            ).first()
+            if row is None:
+                # baseline won the last generation — no EngineRow was inserted for it
+                from cubist.engines.baseline import engine as champion
+            else:
+                champion = load_engine(row.code_path)
+
     log.info("run_generation_task starting generation=%d", next_number)
     try:
-        await run_generation(baseline, next_number)
+        await run_generation(champion, next_number)
         log.info("run_generation_task finished generation=%d", next_number)
     except asyncio.CancelledError:
         log.warning("run_generation_task cancelled generation=%d", next_number)
@@ -212,7 +225,7 @@ async def run_generation_task() -> None:
             {
                 "type": "generation.finished",
                 "number": next_number,
-                "new_champion": baseline.name,
+                "new_champion": champion.name,
                 "elo_delta": 0.0,
                 "promoted": False,
             }
