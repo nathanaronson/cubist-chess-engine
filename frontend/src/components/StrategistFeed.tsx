@@ -8,6 +8,7 @@ import type {
   DarwinEvent,
   StrategistQuestion,
   BuilderCompleted,
+  AdversaryCompleted,
 } from "../api/events";
 import { PanelHead, EmptyPlot } from "./LiveBoards";
 
@@ -44,9 +45,14 @@ export default function StrategistFeed({ events }: StrategistFeedProps) {
   const builders = currentEvents.filter(
     (e): e is BuilderCompleted => e.type === "builder.completed",
   );
+  const adversaries = currentEvents.filter(
+    (e): e is AdversaryCompleted => e.type === "adversary.completed",
+  );
 
   const builderFor = (index: number): BuilderCompleted | undefined =>
     builders.find((b) => b.question_index === index);
+  const adversaryFor = (index: number): AdversaryCompleted | undefined =>
+    adversaries.find((a) => a.question_index === index);
 
   return (
     <div className="panel flex flex-col p-6">
@@ -71,6 +77,7 @@ export default function StrategistFeed({ events }: StrategistFeedProps) {
               key={q.index}
               question={q}
               builder={builderFor(q.index)}
+              adversary={adversaryFor(q.index)}
               ordinal={i + 1}
             />
           ))}
@@ -83,10 +90,16 @@ export default function StrategistFeed({ events }: StrategistFeedProps) {
 interface QuestionCardProps {
   question: StrategistQuestion;
   builder: BuilderCompleted | undefined;
+  adversary: AdversaryCompleted | undefined;
   ordinal: number;
 }
 
-function QuestionCard({ question, builder, ordinal }: QuestionCardProps) {
+function QuestionCard({
+  question,
+  builder,
+  adversary,
+  ordinal,
+}: QuestionCardProps) {
   const dot = CATEGORY_DOT[question.category];
   const settled = builder !== undefined;
 
@@ -129,6 +142,8 @@ function QuestionCard({ question, builder, ordinal }: QuestionCardProps) {
             {question.text}
           </p>
 
+          <AdversaryVerdict adversary={adversary} builder={builder} />
+
           {builder?.ok && (
             <p
               className="font-mono-tab mt-2 truncate text-[11.5px]"
@@ -161,6 +176,55 @@ function QuestionCard({ question, builder, ordinal }: QuestionCardProps) {
         <StatusGlyph builder={builder} settled={settled} />
       </div>
     </li>
+  );
+}
+
+/**
+ * Renders the adversary's one-line verdict under the question.
+ *
+ * States:
+ *   - builder hasn't finished or builder rejected → render nothing (the
+ *     adversary only runs after a successful build, so there's nothing
+ *     meaningful to show yet).
+ *   - builder ok but adversary not yet → "critique pending…" placeholder.
+ *   - adversary ok with summary → render the summary verbatim.
+ *   - adversary failed/skipped (ok=false) → render nothing — the
+ *     pipeline degraded silently and there's no verdict to report.
+ */
+function AdversaryVerdict({
+  adversary,
+  builder,
+}: {
+  adversary: AdversaryCompleted | undefined;
+  builder: BuilderCompleted | undefined;
+}) {
+  if (!builder || !builder.ok) return null;
+
+  if (!adversary) {
+    return (
+      <p
+        className="mt-2 text-[11px] uppercase tracking-woodland"
+        style={{ color: "var(--ink-faint)" }}
+      >
+        <span className="firefly mr-1.5 align-middle" />
+        critique pending
+      </p>
+    );
+  }
+
+  if (!adversary.ok || !adversary.summary) return null;
+
+  return (
+    <p
+      className="mt-2 text-[12.5px] italic leading-snug"
+      style={{
+        color: "var(--bronze-300)",
+        borderLeft: "1.5px solid rgba(201,168,118,0.35)",
+        paddingLeft: 8,
+      }}
+    >
+      {adversary.summary}
+    </p>
   );
 }
 

@@ -52,10 +52,22 @@ ENGINE CODE TO CRITIQUE:
 {engine_code}
 ```
 
-Output: a single tight paragraph (4-8 sentences). Lead with the
-single most important issue. List up to 3 specific concrete
-problems, each with a one-sentence fix the builder can apply
-without rewriting the engine. Plain English, no JSON, no headers,
-no bullet points — the fixer will read this verbatim. If the code
-is genuinely solid for the question, say so plainly in one
-sentence; do NOT invent problems to look thorough.
+Output format — TWO sections separated by a blank line:
+
+```
+SUMMARY: <one short sentence, ≤220 chars, that names the single most
+important issue (or "Looks solid" if the code is fine). The dashboard
+renders this verbatim under the strategist question, so write it like
+a one-line verdict, not a header.>
+
+<full critique paragraph (4-8 sentences). Lead with the most important
+issue. List up to 3 specific concrete problems, each with a one-
+sentence fix the builder can apply without rewriting the engine. Plain
+English, no JSON, no headers, no bullet points — the fixer reads this
+verbatim. If the code is genuinely solid for the question, say so
+plainly in one sentence; do NOT invent problems to look thorough.>
+```
+
+The literal `SUMMARY:` prefix is required on the first line so the
+parser can split it cleanly. Do NOT include the angle brackets or the
+explanatory text in your actual response.

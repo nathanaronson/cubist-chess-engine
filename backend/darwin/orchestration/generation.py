@@ -232,10 +232,11 @@ async def run_generation(
         # still gets a shot at validation rather than being dropped.
         if settings.enable_adversary:
             engine_name = p.stem.replace("_", "-")
-            critique = ""
+            from darwin.agents.adversary import Critique
+            crit: Critique = Critique(summary="", full="")
             try:
                 original_code = p.read_text()
-                critique = await critique_engine(q, original_code, engine_name)
+                crit = await critique_engine(q, original_code, engine_name)
             except Exception as exc:
                 log.warning(
                     "adversary raised q=%d category=%s engine=%s err=%r",
@@ -246,19 +247,20 @@ async def run_generation(
                     "type": "adversary.completed",
                     "question_index": q.index,
                     "engine_name": engine_name,
-                    "critique_chars": len(critique),
-                    "ok": bool(critique),
+                    "summary": crit.summary,
+                    "critique_chars": len(crit.full),
+                    "ok": bool(crit.full),
                 }
             )
 
-            if critique:
+            if crit.full:
                 fixer_ok = True
                 fixer_err: str | None = None
                 try:
                     p = await fix_engine(
                         p,
                         q,
-                        critique,
+                        crit.full,
                         champion_code=primary_src,
                         champion_name=primary.name,
                         generation=generation_number,

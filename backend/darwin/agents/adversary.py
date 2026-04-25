@@ -5,10 +5,11 @@ Sits between the builder and the validator in the per-candidate chain:
     strategist (propose) → builder (code) → adversary (critique) → fixer (revise) → validator
 
 The adversary reads the builder's source and the originating question
-and returns a focused critique paragraph: what's likely to forfeit a
-game, what drifted off the question's category, what the validator
-would reject. The fixer then runs a second builder-style call with the
-critique baked into its prompt.
+and returns a focused critique: what's likely to forfeit a game, what
+drifted off the question's category, what the validator would reject.
+The fixer then runs a second builder-style call with the full critique
+baked into its prompt; the dashboard renders the one-line summary as
+a verdict under each strategist question.
 
 The adversary is intentionally a different model role from the builder
 — pairing the same model family on both sides tends to rubber-stamp
@@ -17,15 +18,16 @@ its own output. ``settings.adversary_provider`` and
 adversary to a different provider (e.g. builder=gemini, adversary=
 claude) without restarting other roles.
 
-Failure mode: if the LLM call errors out, returns ``""``. The
-orchestrator treats an empty critique as "no fixes needed" and skips
-the fixer step, so an adversary outage degrades cleanly to the
+Failure mode: if the LLM call errors out, returns ``Critique("", "")``.
+The orchestrator treats an empty ``full`` as "no fixes needed" and
+skips the fixer step, so an adversary outage degrades cleanly to the
 pre-adversary pipeline.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from darwin.agents.strategist import Question
@@ -36,13 +38,105 @@ logger = logging.getLogger("darwin.agents.adversary")
 
 PROMPT = (Path(__file__).parent / "prompts" / "adversary_v1.md").read_text()
 
+# Hard cap so a malformed `SUMMARY:` line doesn't blow up the dashboard
+# layout. The prompt asks for ≤ 220 chars; we trim a bit higher to be safe.
+_SUMMARY_MAX_CHARS = 280
 
-async def critique_engine(question: Question, code: str, engine_name: str) -> str:
+
+@dataclass
+class Critique:
+    """Result of a single adversary call.
+
+    ``summary`` is one short sentence intended for the dashboard.
+    ``full`` is the multi-sentence paragraph fed verbatim to the fixer.
+    Both are empty strings when the call failed or produced nothing
+    usable; orchestrator code uses ``bool(crit.full)`` as the gate for
+    "should I run the fixer?".
+    """
+
+    summary: str
+    full: str
+
+
+_EMPTY = Critique(summary="", full="")
+
+
+def _first_n_sentences(text: str, n: int) -> str:
+    """Return the first ``n`` sentences of ``text``, joined with spaces.
+
+    Used as a fallback when the model omits the ``SUMMARY:`` prefix —
+    we still want *something* short to render under the question.
+    """
+    remaining = text.strip()
+    out: list[str] = []
+    for _ in range(n):
+        if not remaining:
+            break
+        idx = -1
+        terminator_len = 0
+        for sep in (". ", "! ", "? ", "\n"):
+            j = remaining.find(sep)
+            if j != -1 and (idx == -1 or j < idx):
+                idx = j
+                terminator_len = len(sep)
+        if idx == -1:
+            out.append(remaining.strip())
+            remaining = ""
+            break
+        end = idx + terminator_len
+        sentence = remaining[:end].strip()
+        if sentence:
+            out.append(sentence)
+        remaining = remaining[end:].lstrip()
+    return " ".join(out).strip()
+
+
+def _parse_response(text: str) -> Critique:
+    """Split the LLM response into (summary, full) per the prompt contract.
+
+    Tolerant of: missing blank line between summary and body, lowercase
+    ``Summary:`` instead of ``SUMMARY:``, and the model omitting the
+    prefix entirely (in which case we synthesize a 1-2 sentence summary
+    from the start of the text).
+    """
+    text = (text or "").strip()
+    if not text:
+        return _EMPTY
+
+    lines = text.splitlines()
+    summary = ""
+    body_start = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.lower().startswith("summary:"):
+            summary = stripped.split(":", 1)[1].strip()
+            body_start = i + 1
+            break
+
+    if summary:
+        full_lines = lines[body_start:]
+        # Drop a single leading blank line (the prompt-mandated separator).
+        if full_lines and not full_lines[0].strip():
+            full_lines = full_lines[1:]
+        full = "\n".join(full_lines).strip()
+    else:
+        full = text
+        summary = _first_n_sentences(text, n=1) or text[:_SUMMARY_MAX_CHARS]
+
+    summary = summary[:_SUMMARY_MAX_CHARS].strip()
+    if not full:
+        full = summary
+    return Critique(summary=summary, full=full)
+
+
+async def critique_engine(
+    question: Question, code: str, engine_name: str
+) -> Critique:
     """Return an adversarial critique of ``code`` for ``question``.
 
-    Empty string on any failure (LLM error, empty response, exception).
-    Callers should treat empty as "skip the fixer pass" rather than
-    blocking the candidate.
+    Returns ``Critique("", "")`` on any failure (LLM error, empty
+    response, exception). Callers should treat empty ``full`` as
+    "skip the fixer pass" rather than blocking the candidate.
     """
     user = PROMPT.format(
         category=question.category,
@@ -72,7 +166,7 @@ async def critique_engine(question: Question, code: str, engine_name: str) -> st
             "adversary LLM call for engine=%s failed, skipping critique: %s",
             engine_name, exc,
         )
-        return ""
+        return _EMPTY
 
     text = (text or "").strip()
     if len(text) < 20:
@@ -80,10 +174,11 @@ async def critique_engine(question: Question, code: str, engine_name: str) -> st
             "critique_engine produced short/empty critique engine=%s len=%d — skipping fixer",
             engine_name, len(text),
         )
-        return ""
+        return _EMPTY
 
+    crit = _parse_response(text)
     logger.info(
-        "critique_engine ok engine=%s critique_chars=%d",
-        engine_name, len(text),
+        "critique_engine ok engine=%s summary_chars=%d full_chars=%d",
+        engine_name, len(crit.summary), len(crit.full),
     )
-    return text
+    return crit

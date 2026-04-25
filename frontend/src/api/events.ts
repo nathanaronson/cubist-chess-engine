@@ -22,6 +22,32 @@ export type BuilderCompleted = {
   error: string | null;
 };
 
+// Adversary returns a one-line ``summary`` (rendered under the
+// strategist question) plus the length of the full critique paragraph
+// fed to the fixer. ``ok`` is true when the adversary produced a
+// usable critique; false when it failed/skipped, in which case the
+// fixer step is also skipped.
+export type AdversaryCompleted = {
+  type: "adversary.completed";
+  question_index: number;
+  engine_name: string;
+  summary: string;
+  critique_chars: number;
+  ok: boolean;
+};
+
+// Fired after the fixer either rewrites the candidate file in place
+// (``ok: true``) or fails best-effort (``ok: false``, original file
+// retained). Frontend uses this to settle the "fixing…" indicator
+// under each strategist question.
+export type FixerCompleted = {
+  type: "fixer.completed";
+  question_index: number;
+  engine_name: string;
+  ok: boolean;
+  error: string | null;
+};
+
 export type GameMove = {
   type: "game.move";
   game_id: number;
@@ -74,6 +100,8 @@ export type DarwinEvent =
   | GenerationStarted
   | StrategistQuestion
   | BuilderCompleted
+  | AdversaryCompleted
+  | FixerCompleted
   | GameMove
   | GameFinished
   | GenerationFinished
