@@ -254,6 +254,7 @@ async def _complete_gemini(
         )
 
     backoff = 1.0
+    last_error: Exception | None = None
     async with _sem:
         for attempt in range(5):
             try:
@@ -278,10 +279,25 @@ async def _complete_gemini(
                     )
                 return blocks
             except genai_errors.APIError as e:
+                last_error = e
                 status = getattr(e, "code", None)
+                # Log every retry so the operator sees *which* failure mode
+                # exhausted retries. Without this, a string of 429s and a
+                # string of 503s look identical from outside.
+                log.warning(
+                    "gemini retry attempt=%d/5 status=%r model=%s err=%s",
+                    attempt + 1, status, model, str(e)[:200],
+                )
                 if status == 429 or (attempt < 4):
                     await asyncio.sleep(backoff)
                     backoff *= 2
                     continue
                 raise
-    raise RuntimeError("unreachable")
+    # All 5 attempts errored. Surface the actual API failure rather than a
+    # vestigial RuntimeError("unreachable") — the previous wording made it
+    # impossible to tell rate-limit (429) from upstream-overload (503).
+    raise RuntimeError(
+        f"gemini call failed after 5 retries (model={model}, "
+        f"last_status={getattr(last_error, 'code', None)!r}): "
+        f"{type(last_error).__name__}: {str(last_error)[:200]}"
+    ) from last_error
