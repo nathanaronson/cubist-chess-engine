@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Env
+.env
+.env.local
+
+# Database
+*.db
+*.db-journal
+
+# Generated engines (kept out of git; rebuilt each run)
+backend/cubist/engines/generated/*
+!backend/cubist/engines/generated/.gitkeep
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/

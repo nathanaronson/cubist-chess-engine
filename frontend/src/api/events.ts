@@ -1,0 +1,61 @@
+// FROZEN CONTRACT — mirror of backend/cubist/api/websocket.py.
+// Do not change without team sync; both files must stay aligned.
+
+export type GenerationStarted = {
+  type: "generation.started";
+  number: number;
+  champion: string;
+};
+
+export type StrategistQuestion = {
+  type: "strategist.question";
+  index: number;
+  category: "prompt" | "search" | "book" | "evaluation" | "sampling";
+  text: string;
+};
+
+export type BuilderCompleted = {
+  type: "builder.completed";
+  question_index: number;
+  engine_name: string;
+  ok: boolean;
+  error: string | null;
+};
+
+export type GameMove = {
+  type: "game.move";
+  game_id: number;
+  fen: string;
+  san: string;
+  white: string;
+  black: string;
+  ply: number;
+};
+
+export type GameFinished = {
+  type: "game.finished";
+  game_id: number;
+  result: "1-0" | "0-1" | "1/2-1/2";
+  termination: string;
+  pgn: string;
+  white: string;
+  black: string;
+};
+
+export type GenerationFinished = {
+  type: "generation.finished";
+  number: number;
+  new_champion: string;
+  elo_delta: number;
+  promoted: boolean;
+};
+
+export type CubistEvent =
+  | GenerationStarted
+  | StrategistQuestion
+  | BuilderCompleted
+  | GameMove
+  | GameFinished
+  | GenerationFinished;
+
+export type Envelope = { event: CubistEvent };
