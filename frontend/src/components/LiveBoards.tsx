@@ -11,7 +11,38 @@
 import { Component, memo, useMemo } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 import { Chessboard } from "react-chessboard";
+import { Chess } from "chess.js";
 import type { DarwinEvent, GameMove, GameFinished } from "../api/events";
+
+/**
+ * Walk the SAN history through a fresh chess.js engine to recover the
+ * from/to squares of the last move. ``GameMove`` events only carry SAN,
+ * so we re-derive the source square here for the lichess-style "last
+ * move" highlight on the live board.
+ *
+ * Returns null if the history is empty or any SAN fails to parse — in
+ * that case we skip the highlight and the board still renders cleanly.
+ * Replay is O(plies) but only runs when the memoized BoardCard
+ * detects ``san_history.length`` actually changed, so it's amortized
+ * to one parse per move.
+ */
+function deriveLastMoveSquares(
+  sanHistory: string[],
+): { from: string; to: string } | null {
+  if (sanHistory.length === 0) return null;
+  try {
+    const chess = new Chess();
+    let last: { from: string; to: string } | null = null;
+    for (const san of sanHistory) {
+      const move = chess.move(san);
+      if (!move) return null;
+      last = { from: move.from, to: move.to };
+    }
+    return last;
+  } catch {
+    return null;
+  }
+}
 
 interface LiveBoardsProps {
   events: DarwinEvent[];
@@ -392,6 +423,24 @@ function BoardCardImpl({ game, index }: BoardCardProps) {
   }
   movePairs.reverse();
 
+  // Highlight the last move's from/to squares with a soft amber wash so
+  // the eye can pick up the latest action without scanning the whole
+  // board. Memoized on history length so we don't re-replay the game on
+  // every render — only when a new move actually lands.
+  const lastMove = useMemo(
+    () => deriveLastMoveSquares(game.san_history),
+    [game.san_history.length],
+  );
+  const customSquareStyles = useMemo(() => {
+    if (!lastMove) return undefined;
+    const highlight = {
+      background:
+        "radial-gradient(circle at center, rgba(245,200,90,0.55), rgba(245,200,90,0.18) 70%)",
+      boxShadow: "inset 0 0 0 1px rgba(245,200,90,0.45)",
+    };
+    return { [lastMove.from]: highlight, [lastMove.to]: highlight };
+  }, [lastMove]);
+
   const isHallucination = game.termination === "illegal_move";
   const isCheckmate = game.termination === "checkmate";
   const isDraw =
@@ -495,6 +544,7 @@ function BoardCardImpl({ game, index }: BoardCardProps) {
                 customLightSquareStyle={{
                   backgroundColor: "var(--board-light)",
                 }}
+                customSquareStyles={customSquareStyles}
                 boardWidth={168}
               />
             </BoardErrorBoundary>
