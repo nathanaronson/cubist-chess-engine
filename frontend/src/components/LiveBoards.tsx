@@ -48,13 +48,15 @@ interface LiveBoardsProps {
   events: DarwinEvent[];
 }
 
-// Show only 2 boards live. The full tournament can have 90-800 games
-// concurrent; rendering all of them is unreadable and CPU-heavy. Two
-// boards is enough for the demo to feel "alive" (latest moves come in,
-// games rotate as they finish), and the bracket panel separately shows
-// every game's result. Sorted by most-recent activity (see below) so
-// the boards always show whatever's actively making moves.
-const MAX_BOARDS = 2;
+// Show 4 boards live. Bracket panel separately shows every game's
+// result, so we don't need to render all 90-800 here. Sorted by
+// game_id ascending among unfinished games (NOT by most-recent
+// activity) so the visible slots are STABLE: a board only changes
+// when its game finishes, not every time some other game emits a
+// move. Activity-sort caused a "glitch" effect with 36 concurrent
+// games — every move bumped a different game to position #0 and
+// the visible boards swapped every few hundred ms.
+const MAX_BOARDS = 4;
 
 interface GameState {
   game_id: number;
@@ -179,16 +181,18 @@ export default function LiveBoards({ events }: LiveBoardsProps) {
       else running += 1;
     }
 
-    // Sort by most-recent-activity descending so the visible boards
-    // are always whatever's actively making moves. With MAX_BOARDS=2,
-    // this means: as games finish or stall, fresher games slide in.
-    // Within the same recency bucket, prefer in-progress games over
-    // finished ones so a board that just hit checkmate doesn't hog
-    // the slot while other games are still being played.
+    // Stable selection: unfinished games first, ordered by game_id.
+    // game_id is monotonic in dispatch order so the lowest-id
+    // unfinished game holds slot #0 from the moment it starts until
+    // it finishes; only then does the next-lowest-id game slide in.
+    // This avoids the "glitching" caused by sorting on activity —
+    // with ~36 concurrent games, any sort key tied to a per-event
+    // counter (last_event_idx, ply) makes the visible board flip
+    // identity every time a different game makes a move.
     const visibleGames = Array.from(map.values())
       .sort((a, b) => {
         if (a.finished !== b.finished) return a.finished ? 1 : -1;
-        return b.last_event_idx - a.last_event_idx;
+        return a.game_id - b.game_id;
       })
       .slice(0, MAX_BOARDS);
 
