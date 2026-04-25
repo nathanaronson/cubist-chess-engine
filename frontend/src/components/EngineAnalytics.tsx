@@ -15,17 +15,7 @@ import {
 import { EmptyPlot, PanelHead } from "./LiveBoards";
 
 type LoadState = "loading" | "ready" | "error";
-type Category =
-  | "prompt"
-  | "search"
-  | "book"
-  | "evaluation"
-  | "sampling"
-  | "quiescence"
-  | "timing"
-  | "heuristics"
-  | "endgame"
-  | "unknown";
+type Category = "prompt" | "search" | "book" | "evaluation" | "sampling" | "unknown";
 
 interface EngineRow {
   name: string;
@@ -135,17 +125,7 @@ interface Analytics {
   insights: Array<{ label: string; value: string; detail: string }>;
 }
 
-const CATEGORIES: Category[] = [
-  "prompt",
-  "search",
-  "book",
-  "evaluation",
-  "sampling",
-  "quiescence",
-  "timing",
-  "heuristics",
-  "endgame",
-];
+const CATEGORIES: Category[] = ["prompt", "search", "book", "evaluation", "sampling"];
 
 const FEATURE_RULES = [
   { key: "alpha-beta", label: "Alpha-beta / minimax", re: /\balpha|beta|minimax|negamax/i },
@@ -927,14 +907,6 @@ function categoryColor(category: Category): string {
       return "var(--bronze-300)";
     case "sampling":
       return "#7d8aa0";
-    case "quiescence":
-      return "#5a6b80";
-    case "timing":
-      return "var(--bronze-700)";
-    case "heuristics":
-      return "var(--moss-700)";
-    case "endgame":
-      return "#8a6a47";
     default:
       return "var(--ink-faint)";
   }

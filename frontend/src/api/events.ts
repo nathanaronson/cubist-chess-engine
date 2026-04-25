@@ -10,16 +10,7 @@ export type GenerationStarted = {
 export type StrategistQuestion = {
   type: "strategist.question";
   index: number;
-  category:
-    | "prompt"
-    | "search"
-    | "book"
-    | "evaluation"
-    | "sampling"
-    | "quiescence"
-    | "timing"
-    | "heuristics"
-    | "endgame";
+  category: "prompt" | "search" | "book" | "evaluation" | "sampling";
   text: string;
 };
 
