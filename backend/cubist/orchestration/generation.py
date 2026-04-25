@@ -174,6 +174,10 @@ async def run_generation_task() -> None:
     ``generation.finished`` event (``promoted=False``). Without this the
     asyncio Task just dies, the dashboard hangs on "running", and we have
     to grep honcho's stdout to find out what went wrong.
+
+    ``asyncio.CancelledError`` is treated specially: a ``generation.cancelled``
+    event is emitted before the cancellation propagates, so the frontend
+    can clear its in-progress panels.
     """
     from cubist.engines.baseline import engine as baseline
 
@@ -189,6 +193,19 @@ async def run_generation_task() -> None:
     try:
         await run_generation(baseline, next_number)
         log.info("run_generation_task finished generation=%d", next_number)
+    except asyncio.CancelledError:
+        log.warning("run_generation_task cancelled generation=%d", next_number)
+        # Emit a terminal event so the dashboard knows to stop showing
+        # "Waiting for strategist…" / live-board placeholders. We swallow
+        # any error from the bus emit (rare, but the queue may be torn
+        # down at server-shutdown time) so cancellation always propagates.
+        try:
+            await bus.emit(
+                {"type": "generation.cancelled", "number": next_number}
+            )
+        except Exception:  # pragma: no cover — best-effort emit
+            pass
+        raise
     except Exception:
         log.exception("run_generation_task crashed generation=%d", next_number)
         await bus.emit(
@@ -200,3 +217,64 @@ async def run_generation_task() -> None:
                 "promoted": False,
             }
         )
+
+
+# ---------------------------------------------------------------------------
+# Cancellation API — used by /api/generations/run (replace) and
+# /api/generations/stop (cancel only).
+# ---------------------------------------------------------------------------
+
+# Module-level handle to the currently-running generation task, if any.
+# Single-process / single-worker assumption: this matches the deploy setup
+# (uvicorn with one worker; honcho composes one backend process).
+_current_task: asyncio.Task[None] | None = None
+_task_lock = asyncio.Lock()
+
+
+async def _await_cancellation(task: asyncio.Task[None]) -> None:
+    """Await a cancelled task, swallowing the standard cancellation exception.
+
+    Useful so the caller doesn't need its own try/except around
+    ``await task`` after ``task.cancel()``.
+    """
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        # Cancelled is the expected path; any other exception is already
+        # logged by the task's own try/except. No re-raise here — we
+        # specifically want to ignore cancellation cleanup errors.
+        pass
+
+
+async def start_or_replace_generation_task() -> None:
+    """Cancel any in-flight generation, then start a new one.
+
+    Mounted to ``POST /api/generations/run``. Two clicks of the dashboard's
+    Run button no longer race each other — the second click cancels the
+    first generation cleanly (emits ``generation.cancelled``) before
+    starting the second.
+    """
+    global _current_task
+    async with _task_lock:
+        if _current_task is not None and not _current_task.done():
+            log.info("preempting in-flight generation task before starting new one")
+            _current_task.cancel()
+            await _await_cancellation(_current_task)
+        _current_task = asyncio.create_task(run_generation_task())
+
+
+async def stop_current_generation_task() -> bool:
+    """Cancel the in-flight generation, if any.
+
+    Mounted to ``POST /api/generations/stop`` and called by the frontend's
+    ``beforeunload`` ``sendBeacon`` on page reload. Returns ``True`` if a
+    task was cancelled, ``False`` if there was nothing to cancel — the
+    endpoint surfaces this as ``{"stopped": bool}`` so the dashboard's
+    Stop button can grey out when there's nothing running.
+    """
+    global _current_task
+    if _current_task is None or _current_task.done():
+        return False
+    _current_task.cancel()
+    await _await_cancellation(_current_task)
+    return True

@@ -1,17 +1,16 @@
 """REST routes. Person E owns.
 
-Thin read-only adapters over the three SQLModel tables plus one write
-endpoint that kicks off a background generation task. The live move/event
-stream is served separately over `/ws` (see `server.py`).
+Thin read-only adapters over the three SQLModel tables plus two write
+endpoints that drive the orchestrator. The live move/event stream is
+served separately over `/ws` (see `server.py`).
 
 Routes:
-    GET  /api/engines           all engines ever seen, oldest-first implicit
-    GET  /api/generations       all generations, ordered by number
-    GET  /api/games[?gen=N]     games, optionally filtered to one generation
-    POST /api/generations/run   fire-and-forget: trigger one generation
+    GET  /api/engines            all engines ever seen, oldest-first implicit
+    GET  /api/generations        all generations, ordered by number
+    GET  /api/games[?gen=N]      games, optionally filtered to one generation
+    POST /api/generations/run    cancel any in-flight generation; start fresh
+    POST /api/generations/stop   cancel any in-flight generation; no replacement
 """
-
-import asyncio
 
 from fastapi import APIRouter
 from sqlmodel import select
@@ -48,13 +47,32 @@ def list_games(gen: int | None = None):
 
 @router.post("/generations/run")
 async def run():
-    """Start one generation in the background and return immediately.
+    """Cancel any in-flight generation and start a fresh one.
 
-    The task runs inside the FastAPI event loop so its emitted events reach
-    the same `bus` the `/ws` clients are subscribed to. We do not wait for
-    completion — a single generation can take minutes.
+    Two rapid Run-button clicks no longer race each other — the second
+    request cancels the first task (emitting ``generation.cancelled``)
+    before kicking off its own. The task runs inside the FastAPI event
+    loop so its emitted events reach the same `bus` the `/ws` clients
+    are subscribed to. We do not wait for completion — a single
+    generation can take minutes.
     """
-    from cubist.orchestration.generation import run_generation_task
+    from cubist.orchestration.generation import start_or_replace_generation_task
 
-    asyncio.create_task(run_generation_task())
+    await start_or_replace_generation_task()
     return {"started": True}
+
+
+@router.post("/generations/stop")
+async def stop():
+    """Cancel the in-flight generation, if any. Idempotent.
+
+    Returns ``{"stopped": True}`` if a task was actually cancelled,
+    ``{"stopped": False}`` if there was nothing running. The frontend
+    fires this on Stop-button click and on ``beforeunload`` (via
+    ``navigator.sendBeacon``) so closing/reloading the dashboard tab
+    doesn't leave a generation churning the LLM in the background.
+    """
+    from cubist.orchestration.generation import stop_current_generation_task
+
+    stopped = await stop_current_generation_task()
+    return {"stopped": stopped}

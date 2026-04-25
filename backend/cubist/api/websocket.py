@@ -62,6 +62,21 @@ class GenerationFinished(BaseModel):
     promoted: bool  # True if a new champion was crowned
 
 
+class GenerationCancelled(BaseModel):
+    """Emitted when a running generation is cancelled by user action.
+
+    Triggered by ``POST /api/generations/stop``, by a fresh
+    ``POST /api/generations/run`` (which preempts any currently-running
+    task), or by the frontend's ``beforeunload`` ``sendBeacon`` on page
+    reload. ``number`` is the generation that was in flight; the frontend
+    can use it to clear in-progress dashboard panels (live boards, the
+    "Waiting for strategist…" placeholder).
+    """
+
+    type: Literal["generation.cancelled"] = "generation.cancelled"
+    number: int
+
+
 Event = Union[
     GenerationStarted,
     StrategistQuestion,
@@ -69,6 +84,7 @@ Event = Union[
     GameMove,
     GameFinished,
     GenerationFinished,
+    GenerationCancelled,
 ]
 
 

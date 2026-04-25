@@ -50,12 +50,22 @@ export type GenerationFinished = {
   promoted: boolean;
 };
 
+// Emitted by run_generation_task when an asyncio.CancelledError fires —
+// either because the user clicked Stop, opened a new generation while one
+// was still running, or sent the beforeunload sendBeacon on page reload.
+// Frontend uses it to clear in-progress dashboard panels.
+export type GenerationCancelled = {
+  type: "generation.cancelled";
+  number: number;
+};
+
 export type CubistEvent =
   | GenerationStarted
   | StrategistQuestion
   | BuilderCompleted
   | GameMove
   | GameFinished
-  | GenerationFinished;
+  | GenerationFinished
+  | GenerationCancelled;
 
 export type Envelope = { event: CubistEvent };

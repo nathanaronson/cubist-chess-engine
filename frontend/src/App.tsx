@@ -16,8 +16,9 @@
  * @module App
  */
 
+import { useEffect } from "react";
 import { useEventStream } from "./hooks/useEventStream";
-import LiveBoard from "./components/LiveBoard";
+import LiveBoards from "./components/LiveBoards";
 import EloChart from "./components/EloChart";
 import StrategistFeed from "./components/StrategistFeed";
 import Bracket from "./components/Bracket";
@@ -37,12 +38,51 @@ export default function App() {
   // every panel so each can derive its own view without extra state management.
   const events = useEventStream();
 
-  /** Fires the backend orchestration endpoint to kick off a new generation. */
+  // Whether a generation is currently running, derived from the event log.
+  // ``generation.started`` flips this on; any of ``finished`` / ``cancelled``
+  // flips it off. We walk from the end of the array because the latest
+  // boundary event wins.
+  const isRunning = (() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const t = events[i].type;
+      if (t === "generation.started") return true;
+      if (t === "generation.finished" || t === "generation.cancelled") {
+        return false;
+      }
+    }
+    return false;
+  })();
+
+  /** Cancel any running generation and start a new one. */
   function runGeneration() {
     fetch("/api/generations/run", { method: "POST" }).catch(() => {
       // Backend may not be running in offline/mock development — ignore silently
     });
   }
+
+  /** Cancel the running generation, leaving the dashboard idle. */
+  function stopGeneration() {
+    fetch("/api/generations/stop", { method: "POST" }).catch(() => {
+      // Same offline-tolerance as runGeneration
+    });
+  }
+
+  // Cancel the in-flight generation when the user closes/reloads the tab.
+  // sendBeacon is the only network call the browser guarantees to flush
+  // during pagehide — fetch() can race the document teardown and get
+  // dropped, leaving a generation churning the LLM with nobody watching.
+  useEffect(() => {
+    const onPageHide = () => {
+      try {
+        navigator.sendBeacon("/api/generations/stop");
+      } catch {
+        // sendBeacon throws on some browsers if the URL is rejected.
+        // Best-effort only — there's nothing useful we can do here.
+      }
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, []);
 
   return (
     <div className="min-h-screen p-6">
@@ -64,22 +104,34 @@ export default function App() {
           </span>
 
           <button
+            onClick={stopGeneration}
+            disabled={!isRunning}
+            className="px-3 py-2 bg-gray-700 hover:bg-gray-600 active:bg-gray-800 disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-not-allowed text-white text-sm font-semibold rounded transition-colors"
+          >
+            ■ Stop
+          </button>
+
+          <button
             onClick={runGeneration}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-sm font-semibold rounded transition-colors"
           >
-            Run Generation
+            {isRunning ? "Restart Generation" : "Run Generation"}
           </button>
         </div>
       </header>
 
-      {/* ── Row 1: Live board + Strategist feed + Elo chart ──────────────── */}
-      <div className="grid grid-cols-3 gap-6 mb-6">
-        <LiveBoard events={events} />
+      {/* ── Row 1: Live boards (full width) ──────────────────────────────── */}
+      <div className="mb-6">
+        <LiveBoards events={events} />
+      </div>
+
+      {/* ── Row 2: Strategist feed + Elo chart ───────────────────────────── */}
+      <div className="grid grid-cols-2 gap-6 mb-6">
         <StrategistFeed events={events} />
         <EloChart events={events} />
       </div>
 
-      {/* ── Row 2: Tournament bracket + Generation history ────────────────── */}
+      {/* ── Row 3: Tournament bracket + Generation history ────────────────── */}
       <div className="grid grid-cols-2 gap-6">
         <Bracket events={events} />
         <GenerationTimeline events={events} />
