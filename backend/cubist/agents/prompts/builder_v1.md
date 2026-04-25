@@ -48,8 +48,22 @@ REQUIREMENTS
   - `select_move` is **pure Python** — DO NOT call `complete(...)`
     or `complete_text(...)`. The engine must decide moves entirely
     from `board.legal_moves` and your own evaluation/search code.
-    `await asyncio.sleep(0)` once at the top of select_move is fine
-    if you want to be a polite asyncio citizen, but no LLM calls.
+  - **Speed budget: each `select_move` call MUST return in under
+    5 seconds.** The referee enforces this with `asyncio.wait_for`.
+    Two implications:
+      a) Cap any recursive search at a sane fixed depth. If you
+         implement quiescence (capture-extension search), bound it
+         at depth ≤ 4 — unbounded quiescence in capture-dense
+         middlegames can explode into millions of nodes and forfeit
+         the game on time.
+      b) `asyncio.wait_for` can only cancel coroutines that
+         actually yield. Pure synchronous code keeps running past
+         the deadline. So inside any inner loop that iterates more
+         than ~200 times (i.e. anywhere search recursion or move
+         generation happens), insert `await asyncio.sleep(0)` once
+         per iteration of the *outer* loop. This lets the referee
+         actually kill a slow move when the budget is exceeded
+         instead of waiting for the search to return naturally.
   - The module MUST end with the literal line: `engine = YourEngineClass()`
     (registry imports this top-level symbol). Without it `load_engine`
     raises `AttributeError` and the candidate is dropped.

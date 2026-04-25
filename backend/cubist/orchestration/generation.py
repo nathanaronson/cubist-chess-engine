@@ -19,7 +19,11 @@ from cubist.engines.registry import load_engine
 from cubist.storage.db import get_session
 from cubist.storage.models import EngineRow, GameRow, GenerationRow
 from cubist.tournament.elo import update_elo
-from cubist.tournament.runner import round_robin
+from cubist.tournament.runner import (
+    cool_modal_pool,
+    round_robin,
+    warm_modal_pool,
+)
 from cubist.tournament.selection import select_top_n
 
 log = logging.getLogger("cubist.orchestration")
@@ -47,6 +51,16 @@ async def run_generation(
         raise ValueError("run_generation requires at least one incumbent")
     primary = incumbents[0]
     runner_up = incumbents[1] if len(incumbents) > 1 else None
+
+    # Warm up the Modal pool right when this generation starts. Modal
+    # spins up containers in the background while strategist + builders
+    # + smoke run (~25-30s of compute), so by the time the tournament
+    # actually dispatches the warm pool is ready and tournament wall-
+    # clock skips cold-start entirely. No-op on local backend.
+    # Pool size: 4 (matches typical cohort 1 incumbent + 4 candidates =
+    # 5 engines × 4 ordered pairs = 20 games, where 4 always-warm
+    # + memory-snapshot starts for the rest is the sweet spot).
+    await warm_modal_pool(4)
 
     await bus.emit(
         {
@@ -287,6 +301,12 @@ async def run_generation(
             "ratings": {n: round(r, 1) for n, r in ratings.items()},
         }
     )
+
+    # Generation is done — drop the Modal warm pool back to 0 so we
+    # stop paying idle costs. Fire-and-forget: any failure to cool
+    # down is logged but does not affect generation completion.
+    await cool_modal_pool()
+
     return top
 
 
@@ -388,8 +408,15 @@ async def run_generation_task() -> None:
         next_number, [e.name for e in incumbents],
     )
     try:
-        await run_generation(incumbents, next_number)
-        log.info("run_generation_task finished generation=%d", next_number)
+        try:
+            await run_generation(incumbents, next_number)
+            log.info("run_generation_task finished generation=%d", next_number)
+        finally:
+            # Always cool the Modal warm pool — covers the happy path
+            # (run_generation already cooled, this is a no-op),
+            # cancellation, and crashes. Without this a cancelled run
+            # would leave 4 containers idling indefinitely.
+            await cool_modal_pool()
     except asyncio.CancelledError:
         log.warning("run_generation_task cancelled generation=%d", next_number)
         # Emit a terminal event so the dashboard knows to stop showing
