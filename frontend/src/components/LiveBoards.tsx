@@ -182,17 +182,23 @@ export default function LiveBoards({ events }: LiveBoardsProps) {
       else running += 1;
     }
 
-    // Stable selection: unfinished games first, ordered by game_id.
-    // game_id is monotonic in dispatch order so the lowest-id
-    // unfinished game holds slot #0 from the moment it starts until
-    // it finishes; only then does the next-lowest-id game slide in.
-    // This avoids the "glitching" caused by sorting on activity —
-    // with ~36 concurrent games, any sort key tied to a per-event
-    // counter (last_event_idx, ply) makes the visible board flip
-    // identity every time a different game makes a move.
+    // Stable selection biased toward decisive finishes:
+    //   1. Unfinished games first.
+    //   2. Among finished games, decisive results (1-0 / 0-1) before
+    //      draws, so when we have to fill a slot with a finished game
+    //      the operator sees a real winner instead of yet another
+    //      threefold-repetition draw.
+    //   3. Tiebreaker: lowest game_id. game_id is monotonic in
+    //      dispatch order so a slot stays anchored to the same game
+    //      until it finishes — no flicker when other games emit moves.
+    const isDecisive = (g: GameState) =>
+      g.finished && (g.result === "1-0" || g.result === "0-1");
+    const isDraw = (g: GameState) => g.finished && !isDecisive(g);
     const visibleGames = Array.from(map.values())
       .sort((a, b) => {
         if (a.finished !== b.finished) return a.finished ? 1 : -1;
+        if (isDecisive(a) !== isDecisive(b)) return isDecisive(a) ? -1 : 1;
+        if (isDraw(a) !== isDraw(b)) return isDraw(a) ? 1 : -1;
         return a.game_id - b.game_id;
       })
       .slice(0, MAX_BOARDS);
