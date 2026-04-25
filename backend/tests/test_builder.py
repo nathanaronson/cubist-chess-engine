@@ -11,7 +11,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from cubist.agents.builder import FORBIDDEN, build_engine, validate_engine
+from cubist.agents.builder import (
+    BANNED_IMPORTS,
+    FORBIDDEN,
+    build_engine,
+    validate_engine,
+)
 from cubist.agents.strategist import Question
 
 LEGAL_ENGINE_SOURCE = """\
@@ -155,3 +160,107 @@ async def test_validate_engine_handles_unimportable_module(tmp_path):
     # whether registry.load_engine has been implemented yet.
     assert reason is not None
     assert any(tag in reason for tag in ("load:", "import:"))
+
+
+# ---------------------------------------------------------------------------
+# Follow-up 2: validator must reject the broken cubist-as-settings import.
+# Per plans/followup-2-builder-quality.md — the alias swallows AttributeError
+# and silently downgrades the engine to next(iter(legal)) forever.
+# ---------------------------------------------------------------------------
+
+
+_BANNED_TEMPLATE = """\
+import chess
+
+from cubist.engines.base import BaseLLMEngine
+from cubist.llm import complete_text
+{bad_import}
+
+
+class CandidateEngine(BaseLLMEngine):
+    def __init__(self):
+        super().__init__(name="bad-config-engine", generation=1, lineage=[])
+
+    async def select_move(self, board, time_remaining_ms):
+        try:
+            text = await complete_text(settings.player_model, "system", "user", max_tokens=10)
+            return board.parse_san(text.strip().split()[0])
+        except Exception:
+            return next(iter(board.legal_moves))
+
+
+engine = CandidateEngine()
+"""
+
+
+@pytest.mark.parametrize(
+    "bad_import",
+    [
+        "from cubist import config as settings",
+        "import cubist.config as settings",
+    ],
+)
+def test_banned_imports_regex_matches(bad_import):
+    src = _BANNED_TEMPLATE.format(bad_import=bad_import)
+    assert BANNED_IMPORTS.search(src), (
+        f"BANNED_IMPORTS failed to match: {bad_import!r}"
+    )
+
+
+def test_banned_imports_regex_allows_correct_pattern():
+    """The correct ``from cubist.config import settings`` form must NOT match."""
+    src = _BANNED_TEMPLATE.format(bad_import="from cubist.config import settings")
+    assert not BANNED_IMPORTS.search(src), (
+        "BANNED_IMPORTS incorrectly matched the correct import form"
+    )
+
+
+@pytest.mark.asyncio
+async def test_validator_rejects_bad_config_import(tmp_path):
+    """Follow-up 2 done-when item: validator surfaces a clear failure on the
+    `from cubist import config as settings` family.
+    """
+    bad = tmp_path / "bad_cfg.py"
+    bad.write_text(
+        _BANNED_TEMPLATE.format(bad_import="from cubist import config as settings")
+    )
+
+    ok, reason = await validate_engine(bad)
+    assert ok is False
+    assert reason is not None
+    assert "config-as-settings" in reason or "settings" in reason
+
+
+@pytest.mark.asyncio
+async def test_validator_rejects_alias_form(tmp_path):
+    bad = tmp_path / "bad_cfg2.py"
+    bad.write_text(
+        _BANNED_TEMPLATE.format(bad_import="import cubist.config as settings")
+    )
+
+    ok, reason = await validate_engine(bad)
+    assert ok is False
+    assert reason is not None
+    assert "config-as-settings" in reason or "settings" in reason
+
+
+@pytest.mark.asyncio
+async def test_build_engine_rejects_banned_imports(tmp_path, monkeypatch, question):
+    """build_engine should raise on the same banned pattern (defense in depth)."""
+    monkeypatch.setattr(
+        "cubist.agents.builder.GENERATED_DIR", tmp_path / "generated"
+    )
+    bad_source = LEGAL_ENGINE_SOURCE + "\nfrom cubist import config as settings\n"
+
+    async def fake_complete(**kwargs):
+        return [_fake_tool_use_block(bad_source)]
+
+    monkeypatch.setattr("cubist.agents.builder.complete", fake_complete)
+
+    with pytest.raises(ValueError, match="config-as-settings"):
+        await build_engine(
+            champion_code="x = 1",
+            champion_name="baseline-v0",
+            generation=1,
+            question=question,
+        )

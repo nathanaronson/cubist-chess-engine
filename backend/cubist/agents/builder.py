@@ -57,6 +57,21 @@ FORBIDDEN = re.compile(
     r")"
 )
 
+# Imports that are syntactically OK but semantically broken. Per
+# plans/followup-2-builder-quality.md: these alias the ``cubist.config``
+# *module* to the name ``settings``, so every subsequent
+# ``settings.player_model`` access raises ``AttributeError`` — which the
+# generated engine swallows in its try/except fallback, leaving an engine
+# that always plays ``next(iter(legal))`` and looks like it works to the
+# old smoke-game validator. Reject these at validation time.
+BANNED_IMPORTS = re.compile(
+    r"(?m)^\s*(?:"
+    r"from\s+cubist\s+import\s+config\s+as\s+settings"
+    r"|"
+    r"import\s+cubist\.config\s+as\s+settings"
+    r")\s*$"
+)
+
 
 async def build_engine(
     champion_code: str,
@@ -109,6 +124,12 @@ async def build_engine(
                     f"builder code contains forbidden import / call "
                     f"(engine={engine_name})"
                 )
+            if BANNED_IMPORTS.search(code):
+                raise ValueError(
+                    f"builder code contains banned config-as-settings import "
+                    f"(engine={engine_name}); see "
+                    f"plans/followup-2-builder-quality.md"
+                )
             GENERATED_DIR.mkdir(parents=True, exist_ok=True)
             out = GENERATED_DIR / safe_filename
             out.write_text(code)
@@ -120,15 +141,39 @@ async def build_engine(
 async def validate_engine(module_path: Path) -> tuple[bool, str | None]:
     """Smoke-test a candidate.
 
-    Loads the module via ``cubist.engines.registry.load_engine`` and
-    plays one short game vs ``RandomEngine`` using
-    ``cubist.tournament.referee.play_game``. Any exception during load,
-    play, or termination ``error`` adjudication counts as a failed
-    validation.
+    Two-phase validation:
+
+      1. **Static source check.** Read the module source and reject any
+         occurrence of ``BANNED_IMPORTS`` (the ``from cubist import config
+         as settings`` family — see ``plans/followup-2-builder-quality.md``)
+         or ``FORBIDDEN`` (sandbox-escape primitives). These are caught
+         here as well as at build-time so a hand-edited file in
+         ``engines/generated/`` can't sneak past.
+
+      2. **Smoke game.** Load via ``cubist.engines.registry.load_engine``
+         and play one short game vs ``RandomEngine`` using
+         ``cubist.tournament.referee.play_game``. Any exception during
+         load, play, or termination ``error`` adjudication counts as a
+         failed validation.
 
     Returns:
         ``(True, None)`` on success, ``(False, reason)`` on failure.
     """
+    # Static source check — runs before any code from the module executes.
+    try:
+        source = Path(module_path).read_text()
+    except Exception as e:
+        return False, f"read: {e!r}"
+
+    if BANNED_IMPORTS.search(source):
+        return False, (
+            "banned config-as-settings import — "
+            "use `from cubist.config import settings` instead"
+        )
+
+    if FORBIDDEN.search(source):
+        return False, "forbidden import / call in source"
+
     # Lazy imports — registry / referee may not yet be implemented when
     # Track A and Track B haven't merged. The validator is only called by
     # Person E's orchestrator after those merges land.
