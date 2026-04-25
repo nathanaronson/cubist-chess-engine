@@ -7,7 +7,7 @@ SHELL := /bin/bash
         install install-backend install-frontend \
         dev backend frontend \
         seed run replay smoke eval \
-        test lint format check \
+        test lint format check check-docs ci \
         clean clean-db reset
 
 help: ## Show this help
@@ -67,6 +67,15 @@ format: ## Ruff format in-place
 	cd backend && uv run ruff format .
 
 check: lint test ## Lint + tests (pre-PR gate)
+
+check-docs: ## Verify markdown links + darwin.* symbol references
+	cd backend && uv run python ../scripts/check_docs.py
+
+ci: ## Lint + format-check + tests + doc verifier (mirrors CI)
+	cd backend && uv run ruff check .
+	cd backend && uv run ruff format --check .
+	cd backend && uv run pytest -q
+	cd backend && uv run python ../scripts/check_docs.py
 
 # ---- cleanup ----
 
