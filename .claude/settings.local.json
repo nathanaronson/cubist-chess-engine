@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(pdflatex -interaction=nonstopmode proposal.tex)",
-      "Bash(rm -f proposal.aux proposal.log proposal.out proposal.toc)"
+      "Bash(rm -f proposal.aux proposal.log proposal.out proposal.toc)",
+      "Bash(sqlite3 cubist.db \"SELECT id, number, champion_before, champion_after, started_at, finished_at FROM generations;\")"
     ]
   }
 }
