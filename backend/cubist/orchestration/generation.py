@@ -45,6 +45,8 @@ async def run_generation(
     if not incumbents:
         raise ValueError("run_generation requires at least one incumbent")
     primary = incumbents[0]
+    runner_up = incumbents[1] if len(incumbents) > 1 else None
+
     await bus.emit(
         {
             "type": "generation.started",
@@ -53,7 +55,18 @@ async def run_generation(
         }
     )
 
-    questions = await propose_questions(_read_source(primary), [])
+    # Both the strategist and the builder see the champion AND the
+    # runner-up. The champion is the seed they're modifying; the runner-
+    # up is shown as context — a strong alternative design from the same
+    # gen, useful for the LLM to compare approaches without forcing a
+    # hybrid.
+    primary_src = _read_source(primary)
+    runner_up_src = _read_source(runner_up) if runner_up else None
+    runner_up_name = runner_up.name if runner_up else None
+
+    questions = await propose_questions(
+        primary_src, [], runner_up_code=runner_up_src
+    )
     for q in questions:
         await bus.emit(
             {
@@ -66,7 +79,14 @@ async def run_generation(
 
     paths = await asyncio.gather(
         *[
-            build_engine(_read_source(primary), primary.name, generation_number, q)
+            build_engine(
+                primary_src,
+                primary.name,
+                generation_number,
+                q,
+                runner_up_code=runner_up_src,
+                runner_up_name=runner_up_name,
+            )
             for q in questions
         ],
         return_exceptions=True,

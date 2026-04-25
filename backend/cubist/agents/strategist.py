@@ -62,6 +62,7 @@ class Question:
 async def propose_questions(
     champion_code: str,
     history: list[dict],
+    runner_up_code: str | None = None,
 ) -> list[Question]:
     """Return 4 distinct improvement questions across the locked categories.
 
@@ -71,6 +72,10 @@ async def propose_questions(
             wins/losses, accepted question category, etc.). Empty on
             generation 1; otherwise the strategist may use it to ground its
             rationale.
+        runner_up_code: source of the previous generation's runner-up,
+            if any. Passed alongside the champion so the strategist sees
+            both surviving designs and can ask questions that play to
+            the gap between them. ``None`` on the very first generation.
 
     Returns:
         Length-4 list of ``Question`` records, deduplicated by category.
@@ -79,8 +84,14 @@ async def propose_questions(
         ValueError: if the model returns fewer than 4 distinct categories.
         RuntimeError: if the model never produced a ``tool_use`` block.
     """
+    runner_up_block = (
+        runner_up_code
+        if runner_up_code is not None
+        else "(no runner-up — first generation, only baseline-v0 available)"
+    )
     user = PROMPT.format(
         champion_code=champion_code,
+        runner_up_code=runner_up_block,
         history_json=json.dumps(history, indent=2),
     )
     content = await complete(

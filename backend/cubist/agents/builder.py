@@ -310,6 +310,8 @@ async def build_engine(
     champion_name: str,
     generation: int,
     question: Question,
+    runner_up_code: str | None = None,
+    runner_up_name: str | None = None,
 ) -> Path:
     """Generate a candidate engine module and return its path.
 
@@ -319,6 +321,14 @@ async def build_engine(
             derive a unique filename and to populate ``lineage``).
         generation: the new candidate's generation number.
         question: the strategist question this candidate is answering.
+        runner_up_code: source of the previous gen's runner-up engine,
+            shown to the builder as context. The new candidate is still
+            modelled on ``champion_code`` (which seeds the file shape
+            and naming convention), but the builder may borrow specific
+            ideas from the runner-up — e.g. its prompt style, its
+            evaluation function — without being forced into a hybrid.
+        runner_up_name: ``engine.name`` of the runner-up. Used only for
+            the prompt's labelling; not added to ``lineage``.
 
     Returns:
         Path to the written ``.py`` module under ``engines/generated/``.
@@ -331,6 +341,13 @@ async def build_engine(
     engine_name = f"gen{generation}-{question.category}-{short}"
     safe_filename = engine_name.replace("-", "_") + ".py"
 
+    runner_up_block = (
+        runner_up_code
+        if runner_up_code is not None
+        else "(no runner-up — first generation, only baseline-v0 available)"
+    )
+    runner_up_label = runner_up_name or "-"
+
     user = PROMPT.format(
         category=question.category,
         question_text=question.text,
@@ -338,6 +355,8 @@ async def build_engine(
         engine_name=engine_name,
         generation=generation,
         champion_name=champion_name,
+        runner_up_code=runner_up_block,
+        runner_up_name=runner_up_label,
     )
 
     logger.info(

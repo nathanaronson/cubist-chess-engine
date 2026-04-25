@@ -29,10 +29,18 @@ The output is shown verbatim in the dashboard, so the question text should
 read as plain English a chess player can understand — not JSON-ese, not
 "Pseudocode:" preamble. One paragraph per question is enough.
 
-CURRENT CHAMPION SOURCE:
+CURRENT CHAMPION SOURCE (the engine you're trying to improve on):
 
 ```python
 {champion_code}
+```
+
+PREVIOUS-GEN RUNNER-UP SOURCE (also surviving into this generation —
+it lost the round-robin to the champion above but is still strong
+enough to compete; useful to compare what each one does well):
+
+```python
+{runner_up_code}
 ```
 
 HISTORY (prior generations, JSON):

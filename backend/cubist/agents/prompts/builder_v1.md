@@ -4,10 +4,21 @@ answer ONE specific improvement question.
 QUESTION (category={category}):
 {question_text}
 
-CHAMPION SOURCE:
+CHAMPION SOURCE ({champion_name}, the engine you are modifying):
 
 ```python
 {champion_code}
+```
+
+RUNNER-UP SOURCE ({runner_up_name}, also surviving from the previous
+generation — shown for context only; you are NOT building a hybrid,
+you are still modifying the champion above. But if the runner-up does
+something relevant to your category, e.g. a prompt style or eval
+function you'd otherwise have to invent from scratch, feel free to
+adapt that idea):
+
+```python
+{runner_up_code}
 ```
 
 REQUIREMENTS
