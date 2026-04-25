@@ -1,7 +1,8 @@
-"""Round-robin scheduler with parallel game execution.
+"""Round-robin scheduler with bounded parallel game execution.
 
-Runs all pairings concurrently via asyncio.gather. Both colors per pairing.
-Returns a scoreboard. See plans/person-b-tournament.md.
+Runs both colors per pairing, but caps concurrent games with
+`settings.max_parallel_games`. This keeps slow or rate-limited LLM providers
+from turning every tournament game into a timeout at once.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+from cubist.config import settings
 from cubist.engines.base import Engine
 from cubist.tournament.referee import GameResult, play_game
 
@@ -31,18 +33,26 @@ async def round_robin(
 ) -> Standings:
     if games_per_pairing < 0:
         raise ValueError("games_per_pairing must be non-negative")
+    if settings.max_parallel_games < 1:
+        raise ValueError("max_parallel_games must be at least 1")
 
-    tasks = []
+    pairings = []
     game_id = 0
     for i, white in enumerate(engines):
         for j, black in enumerate(engines):
             if i == j:
                 continue
             for _ in range(games_per_pairing):
-                tasks.append(play_game(white, black, time_per_move_ms, on_event, game_id))
+                pairings.append((white, black, game_id))
                 game_id += 1
 
-    results = await asyncio.gather(*tasks)
+    sem = asyncio.Semaphore(settings.max_parallel_games)
+
+    async def _guarded(white: Engine, black: Engine, game_id: int) -> GameResult:
+        async with sem:
+            return await play_game(white, black, time_per_move_ms, on_event, game_id)
+
+    results = await asyncio.gather(*[_guarded(white, black, gid) for white, black, gid in pairings])
     scores: dict[str, float] = defaultdict(float)
     for result in results:
         if result.result == "1-0":

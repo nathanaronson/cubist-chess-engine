@@ -9,16 +9,48 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 import chess
 import chess.pgn
 
+from cubist import llm
 from cubist.config import settings
 from cubist.engines.base import Engine
 
 EventCb = Callable[[dict], Awaitable[None]] | None
+log = logging.getLogger(__name__)
+
+
+def _run_select_move(
+    engine: Engine,
+    board: chess.Board,
+    time_per_move_ms: int,
+) -> chess.Move:
+    """Run ``engine.select_move`` on a private event loop in a worker thread.
+
+    Engines may execute synchronous CPU-heavy work (alpha-beta search,
+    evaluation) inside their async ``select_move``. Running that on the
+    main event loop starves the WebSocket bus and the FastAPI request
+    handlers — the dashboard goes dark. By giving each move its own
+    short-lived loop in a thread, the main loop stays responsive
+    regardless of how the engine is implemented.
+
+    LLM-using engines work too: ``cubist.llm`` keeps its clients and
+    semaphore per-loop and we call ``cleanup_loop`` here to drop the
+    cached entries when the loop is closed.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            engine.select_move(board, time_per_move_ms)
+        )
+    finally:
+        loop_id = id(loop)
+        loop.close()
+        llm.cleanup_loop(loop_id)
 
 
 @dataclass
@@ -30,11 +62,19 @@ class GameResult:
     pgn: str
 
 
-def _to_pgn(board: chess.Board, white: str, black: str, result: str) -> str:
+def _to_pgn(
+    board: chess.Board,
+    white: str,
+    black: str,
+    result: str,
+    extra_headers: dict[str, str] | None = None,
+) -> str:
     game = chess.pgn.Game()
     game.headers["White"] = white
     game.headers["Black"] = black
     game.headers["Result"] = result
+    for key, value in (extra_headers or {}).items():
+        game.headers[key] = value
 
     node = game
     for move in board.move_stack:
@@ -65,8 +105,9 @@ async def _finish(
     termination: str,
     on_event: EventCb,
     game_id: int,
+    extra_headers: dict[str, str] | None = None,
 ) -> GameResult:
-    pgn = _to_pgn(board, white, black, result)
+    pgn = _to_pgn(board, white, black, result, extra_headers)
     if on_event:
         await on_event(
             {
@@ -90,6 +131,8 @@ async def play_game(
     game_id: int = 0,
 ) -> GameResult:
     board = chess.Board()
+    # Allow provider/network jitter beyond the requested engine budget without
+    # letting one stalled move block the tournament indefinitely.
     timeout_s = (time_per_move_ms / 1000) + 5
 
     while not board.is_game_over(claim_draw=True):
@@ -109,7 +152,9 @@ async def play_game(
 
         try:
             move = await asyncio.wait_for(
-                engine.select_move(board.copy(), time_per_move_ms),
+                asyncio.to_thread(
+                    _run_select_move, engine, board.copy(), time_per_move_ms
+                ),
                 timeout=timeout_s,
             )
         except asyncio.TimeoutError:
@@ -122,7 +167,8 @@ async def play_game(
                 on_event,
                 game_id,
             )
-        except Exception:
+        except Exception as exc:
+            log.warning("game error: %s vs %s: %r", white.name, black.name, exc)
             return await _finish(
                 board,
                 white.name,
@@ -131,6 +177,7 @@ async def play_game(
                 "error",
                 on_event,
                 game_id,
+                {"ErrorClass": type(exc).__name__},
             )
 
         if move not in board.legal_moves:

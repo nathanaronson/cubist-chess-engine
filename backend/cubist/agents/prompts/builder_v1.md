@@ -34,6 +34,30 @@ REQUIREMENTS
   - Always have a fallback that returns a legal move, even if the LLM
     response is malformed. The engine MUST NOT raise during a game.
     The standard fallback is `next(iter(board.legal_moves))`.
+
+  - APIs you may call — these are the EXACT signatures. Do not invent
+    keyword arguments, return types, or attributes. Wrap every external
+    call in try/except with the legal-move fallback above.
+
+        # cubist.llm.complete_text returns a STRING (not an object).
+        # Signature: (model: str, system: str, user: str, max_tokens: int = 256) -> str
+        text: str = await complete_text(
+            settings.player_model,
+            "You are a chess engine. Reply with one SAN move.",
+            f"FEN: {{board.fen()}}\nLegal: {{legal_san}}\nYour move:",
+            max_tokens=10,
+        )
+
+        # python-chess methods that actually exist on chess.Board:
+        #   board.legal_moves, board.fen(), board.turn, board.push(move),
+        #   board.pop(), board.parse_san(text), board.san(move),
+        #   board.piece_at(sq), board.king(color), board.is_checkmate(),
+        #   board.is_game_over(claim_draw=True), board.copy()
+        # python-chess module-level helpers that exist:
+        #   chess.Move.from_uci(s), chess.square(file, rank),
+        #   chess.square_file(sq), chess.square_rank(sq), chess.SQUARES
+        # Functions that DO NOT exist (do not call):
+        #   chess.square_on_board, chess.distance, board.legal_uci_moves
   - Keep the answer focused on the question's category — don't pile on
     orthogonal changes. One concept per builder run.
 
