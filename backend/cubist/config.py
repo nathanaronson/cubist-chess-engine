@@ -23,6 +23,7 @@ class Settings(BaseSettings):
 
     time_per_move_ms: int = 20_000
     games_per_pairing: int = 2
+    max_parallel_games: int = 2
     max_moves_per_game: int = 120
 
     api_host: str = "127.0.0.1"

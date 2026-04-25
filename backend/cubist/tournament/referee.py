@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
@@ -20,6 +21,7 @@ from cubist.config import settings
 from cubist.engines.base import Engine
 
 EventCb = Callable[[dict], Awaitable[None]] | None
+log = logging.getLogger(__name__)
 
 
 def _run_select_move(
@@ -60,11 +62,19 @@ class GameResult:
     pgn: str
 
 
-def _to_pgn(board: chess.Board, white: str, black: str, result: str) -> str:
+def _to_pgn(
+    board: chess.Board,
+    white: str,
+    black: str,
+    result: str,
+    extra_headers: dict[str, str] | None = None,
+) -> str:
     game = chess.pgn.Game()
     game.headers["White"] = white
     game.headers["Black"] = black
     game.headers["Result"] = result
+    for key, value in (extra_headers or {}).items():
+        game.headers[key] = value
 
     node = game
     for move in board.move_stack:
@@ -95,8 +105,9 @@ async def _finish(
     termination: str,
     on_event: EventCb,
     game_id: int,
+    extra_headers: dict[str, str] | None = None,
 ) -> GameResult:
-    pgn = _to_pgn(board, white, black, result)
+    pgn = _to_pgn(board, white, black, result, extra_headers)
     if on_event:
         await on_event(
             {
@@ -120,6 +131,8 @@ async def play_game(
     game_id: int = 0,
 ) -> GameResult:
     board = chess.Board()
+    # Allow provider/network jitter beyond the requested engine budget without
+    # letting one stalled move block the tournament indefinitely.
     timeout_s = (time_per_move_ms / 1000) + 5
 
     while not board.is_game_over(claim_draw=True):
@@ -154,7 +167,8 @@ async def play_game(
                 on_event,
                 game_id,
             )
-        except Exception:
+        except Exception as exc:
+            log.warning("game error: %s vs %s: %r", white.name, black.name, exc)
             return await _finish(
                 board,
                 white.name,
@@ -163,6 +177,7 @@ async def play_game(
                 "error",
                 on_event,
                 game_id,
+                {"ErrorClass": type(exc).__name__},
             )
 
         if move not in board.legal_moves:
