@@ -10,8 +10,6 @@ import json
 import logging
 from datetime import datetime
 
-log = logging.getLogger("cubist.orchestration")
-
 from cubist.agents.builder import build_engine, validate_engine
 from cubist.agents.strategist import propose_questions
 from cubist.api.websocket import bus
@@ -22,6 +20,8 @@ from cubist.storage.db import get_session
 from cubist.storage.models import EngineRow, GameRow, GenerationRow
 from cubist.tournament.runner import round_robin
 from cubist.tournament.selection import select_champion
+
+log = logging.getLogger("cubist.orchestration")
 
 
 def _read_source(engine: Engine) -> str:
