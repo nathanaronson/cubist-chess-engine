@@ -365,7 +365,12 @@ async def build_engine(
         model=settings.builder_model,
         system="You write Python chess engines.",
         user=user,
-        max_tokens=8192,
+        # Cap at ~32k output tokens — close to Gemini 3 Flash's max
+        # output ceiling. Engines grow gen-over-gen as features stack
+        # (piece-square tables, opening books, transposition tables);
+        # the previous 8192 cap was truncating mid-function for any
+        # engine bigger than ~250 lines.
+        max_tokens=32768,
         tools=[TOOL],
         provider=settings.provider_for("builder"),
     )

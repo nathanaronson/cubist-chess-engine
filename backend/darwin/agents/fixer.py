@@ -95,7 +95,10 @@ async def fix_engine(
             model=settings.builder_model,
             system="You revise Python chess engines based on critique.",
             user=user,
-            max_tokens=16384,
+            # Match the builder's 32k cap so a fix can rewrite the entire
+            # engine if the critique demands it. Smaller caps would force
+            # the fixer to truncate mid-function on larger engines.
+            max_tokens=32768,
             tools=[TOOL],
             provider=settings.provider_for("builder"),
         )

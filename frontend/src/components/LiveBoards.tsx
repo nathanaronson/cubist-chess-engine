@@ -412,7 +412,16 @@ function BoardCard({ game, index }: BoardCardProps) {
             }}
           >
             <Chessboard
-              position={game.fen === "start" ? "start" : game.fen}
+              // Defensive: empty / undefined fen happens when a game
+              // was synthesized as an error-forfeit before any moves
+              // landed (Modal timeout fallback). react-chessboard
+              // silently renders nothing for empty position; force the
+              // starting position so the slot at least has a board.
+              position={
+                !game.fen || game.fen === "start"
+                  ? "start"
+                  : game.fen
+              }
               arePiecesDraggable={false}
               customDarkSquareStyle={{
                 backgroundColor: "var(--board-dark)",
