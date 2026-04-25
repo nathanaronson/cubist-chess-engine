@@ -67,7 +67,11 @@ REQUIREMENTS
   - The module MUST end with the literal line: `engine = YourEngineClass()`
     (registry imports this top-level symbol). Without it `load_engine`
     raises `AttributeError` and the candidate is dropped.
-  - Stay under 100 lines of code total.
+  - No hard line limit — write as much code as the technique
+    requires. Generations build on previous champions, so the engine
+    grows over time as features stack: piece-square tables, opening
+    books, transposition tables, etc. Don't drop a working feature
+    just to fit some arbitrary size.
   - Allowed imports ONLY:
         - the Python standard library (random, math, time, asyncio, ...)
         - `chess`            (python-chess move generator + board)
